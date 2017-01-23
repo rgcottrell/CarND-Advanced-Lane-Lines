@@ -94,7 +94,7 @@ ax2.set_title('Undistorted Image', fontsize=30)
 
 
 
-    <matplotlib.text.Text at 0x115d96c88>
+    <matplotlib.text.Text at 0x118ad9e10>
 
 
 
@@ -118,45 +118,48 @@ for filename in os.listdir('camera_cal'):
 
 With distortion correction now solved, we can move on to work more directly with finding lanes. The next step will be to apply some mixture of color and gradient thresholding to identify points that likely belong to the lane line.
 
-### HLS Saturation Thresholds
+### HLS Color Thresholds
 
-The BGR color representation that OpenCV uses natively to process images does not lend itself well to lane detection. Instead, we will convert the images into an alternative color space that is more robust to road conditions. In particular, the saturation channel of the HSL color space has shown itself to be particularly good at identifying both white and yellow lane lines under various lighting conditions.
+The BGR color representation that OpenCV uses natively to process images does not lend itself well to lane detection. Instead, we will convert the images into an alternative color space that is more robust to road conditions. In particular, the saturation channel of the HSL color space has shown itself to be particularly good at identifying both white and yellow lane lines under various lighting conditions. Unfortunately, saturation alone will also bring in a significant amount of shadows and other undesirable elements. We will therefore combine the saturation threshold with a lightness threshold that will filter out very dark elements.
 
 
 ```python
-SATURATION_THRESHOLD = (100, 255)
+LIGHTNESS_THRESHOLD = (120, 255)
+SATURATION_THRESHOLD = (140, 255)
 
-def saturation_threshold(img):
+def color_threshold(img):
     hls = cv2.cvtColor(img, cv2.COLOR_BGR2HLS)
-    s = hls[:,:,2]
-    binary = np.zeros_like(s)
-    binary[(s > SATURATION_THRESHOLD[0]) & (s <= SATURATION_THRESHOLD[1])] = 1
+    L = hls[:,:,1]
+    S = hls[:,:,2]
+    binary = np.zeros_like(S)
+    binary[(L > LIGHTNESS_THRESHOLD[0]) & (L <= LIGHTNESS_THRESHOLD[1]) &
+           (S >= SATURATION_THRESHOLD[0]) & (S <= SATURATION_THRESHOLD[1])] = 1
     return binary
 
 img = cv2.imread('test_images/test1.jpg')
 img = undistort(img)
-dst = saturation_threshold(img)
+dst = color_threshold(img)
 
 # Plot the original and thresholded images.
 f, (ax1, ax2) = plt.subplots(1, 2, figsize=(24, 9))
 ax1.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 ax1.set_title('Undistorted Image', fontsize=30)
 ax2.imshow(dst, cmap='gray')
-ax2.set_title('Saturation Threshold', fontsize=30)
+ax2.set_title('Color Threshold', fontsize=30)
 ```
 
 
 
 
-    <matplotlib.text.Text at 0x10f8c7d68>
+    <matplotlib.text.Text at 0x1157dc400>
 
 
 
 
-![png](output_8_1.png)
+![png](output_9_1.png)
 
 
-Thresholding on the saturation channel in the HLS colorspace has done a good job of isolating both the yellow and white lane lines, but it has worked better in some of the test images than others.
+Thresholding on the saturation and lightness channels in the HLS colorspace has done a good job of isolating both the yellow and white lane lines. 
 
 
 ```python
@@ -164,20 +167,20 @@ Thresholding on the saturation channel in the HLS colorspace has done a good job
 for filename in os.listdir('test_images'):
     img = cv2.imread('test_images/' + filename)
     img = undistort(img)
-    img = saturation_threshold(img)
+    img = color_threshold(img)
     # Convert from binary to grayscale before saving.
     img *= 255
-    cv2.imwrite('output_images/saturation-threshold-' + filename, img)
+    cv2.imwrite('output_images/color-threshold-' + filename, img)
 ```
 
 ### Sobel Gradient Thresholds
 
-In the first version of this project, we used Canny edge detection to isolate lanes lines. This worked well, but the algorithm found edges in both the horizontal and vertical directions. Since lane lines are mostly vertical, it would be better to emphasize the vertical edges. This is possible through the use of Sobel filters.
+In the first version of this project, we used Canny edge detection to isolate lanes lines. This worked well, but the algorithm found edges in both the horizontal and vertical directions. With Sobel filters we can work with the horizontal and vertical gradients separately. For this project, we will set very liberal thresholds for each gradient direction, but will then take the intersection of both. This worked remarkably well to isolate the lane lines while remove spurious noise that was present in one direction but not the other.
 
 
 ```python
-SOBEL_X_THRESHOLD = (75, 200)
-SOBEL_Y_THRESHOLD = (75, 200)
+SOBEL_X_THRESHOLD = (25, 200)
+SOBEL_Y_THRESHOLD = (25, 200)
 
 def sobel_threshold(img, dir='x', thresh=SOBEL_X_THRESHOLD):
     if dir == 'x':
@@ -197,7 +200,7 @@ def combined_sobel(img):
     sobel_x = sobel_threshold(gray, 'x', SOBEL_X_THRESHOLD)
     sobel_y = sobel_threshold(gray, 'y', SOBEL_Y_THRESHOLD)
     # Combine the filters.
-    binary = cv2.bitwise_or(sobel_x, sobel_y)
+    binary = cv2.bitwise_and(sobel_x, sobel_y)
     return binary
 
 img = cv2.imread('test_images/test1.jpg')
@@ -215,13 +218,15 @@ ax2.set_title('Sobel Threshold', fontsize=30)
 
 
 
-    <matplotlib.text.Text at 0x110693828>
+    <matplotlib.text.Text at 0x1107b0e80>
 
 
 
 
-![png](output_12_1.png)
+![png](output_13_1.png)
 
+
+The Sobel threshold filter didn't work as well with the washed out lines in this image as the color filter, but it did work better on other test images.
 
 
 ```python
@@ -232,21 +237,19 @@ for filename in os.listdir('test_images'):
     img = combined_sobel(img)
     # Convert from binary to grayscale before saving.
     img *= 255
-    cv2.imwrite('output_images/combined-sobel-' + filename, img)
+    cv2.imwrite('output_images/sobel-' + filename, img)
 ```
-
-The Sobel threshold filter didn't work as well with the washed out lines in this image as the color saturation filter, but it did work better on other test images.
 
 ### Combined Thresholds
 
-The saturation and sobel filters each performed differently based on various conditions of the images. Rather than relying on one or the other, we can combine the filters to produce a thresholding function that takes advantages of the unique properties of each.
+The color and sobel filters each performed differently based on various conditions of the images. Rather than relying on one or the other, we can combine the filters to produce a thresholding function that takes advantages of the unique properties of each.
 
 
 ```python
 def combined_threshold(img):
-    saturation_binary = saturation_threshold(img)
+    color_binary = color_threshold(img)
     sobel_binary = combined_sobel(img)
-    binary = cv2.bitwise_or(saturation_binary, sobel_binary)
+    binary = cv2.bitwise_or(color_binary, sobel_binary)
     return binary
 
 img = cv2.imread('test_images/test1.jpg')
@@ -264,12 +267,12 @@ ax2.set_title('Combined Threshold', fontsize=30)
 
 
 
-    <matplotlib.text.Text at 0x11cf449e8>
+    <matplotlib.text.Text at 0x11c5e4780>
 
 
 
 
-![png](output_15_1.png)
+![png](output_17_1.png)
 
 
 By combining color based and gradient based thresholding techniques, we were able to isolate lane lines in images where neither technique alone would have been sufficient. While we could continue to try different types and combinations of thresholds, using just these two will give us a good start.
@@ -294,8 +297,8 @@ The test images all feature various degrees of curving roads, which makes it har
 
 
 ```python
-PERSPECTIVE_SRC_POINTS = np.float32([[250, 719], [505, 520], [820, 520], [1180, 719]])
-PERSPECTIVE_DST_POINTS = np.float32([[250, 719], [250, 520], [1180, 520], [1180, 719]])
+PERSPECTIVE_SRC_POINTS = np.float32([[100, 719], [494, 500], [785, 500], [1179, 719]])
+PERSPECTIVE_DST_POINTS = np.float32([[200, 719], [200, 500], [1079, 500], [1079, 719]])
 M = cv2.getPerspectiveTransform(PERSPECTIVE_SRC_POINTS, PERSPECTIVE_DST_POINTS)
 Minv = cv2.getPerspectiveTransform(PERSPECTIVE_DST_POINTS, PERSPECTIVE_SRC_POINTS)
 
@@ -323,12 +326,12 @@ ax2.set_title('Birds-Eye Image', fontsize=30)
 
 
 
-    <matplotlib.text.Text at 0x118c8db00>
+    <matplotlib.text.Text at 0x11e8c1a20>
 
 
 
 
-![png](output_19_1.png)
+![png](output_21_1.png)
 
 
 
@@ -372,12 +375,12 @@ ax2.set_title('Histogram', fontsize=30)
 
 
 
-    <matplotlib.text.Text at 0x11a92c668>
+    <matplotlib.text.Text at 0x11e7d9908>
 
 
 
 
-![png](output_22_1.png)
+![png](output_24_1.png)
 
 
 
@@ -402,29 +405,50 @@ We have now applied all of the thresholding, transformations, and histograms and
 
 ```python
 # Dimensions of sliding window to search for lane points.
-SLIDING_WINDOW_WIDTH = 200
+SLIDING_WINDOW_WIDTH = 100
 SLIDING_WINDOW_HEIGHT = 90
 
-# Conversion of pixels to meters, as given in the lecture notes.
-X_METERS_PER_PIXEL = 3.7 / 700.
-Y_METERS_PER_PIXEL = 30. / 720.
+# Conversion of pixels to meters were estimated from the birds-eye
+# project of the straight lane images. Federal regulations require
+# lane width to be at least 3.7m wide, which maps to approximately
+# 730px. Dashed lines are 10m long, or 80px in our projection.
+X_METERS_PER_PIXEL = 3.7 / 730.
+Y_METERS_PER_PIXEL = 36. / 720.
 
 # Number of frames to smooth over.
-N_FRAMES = 3
+N_FRAMES = 6
+
+# Maximum number of bad frames to skip before rejecting detection
+# and starting from scratch.
+N_SKIPS = 2
+
+# The cosine similarity of the new fit to the average of the previous
+# fits must be within this range or the new fit will be discarded.
+FIT_TOLERANCE = 0.98
 
 # Define a class to receive the characteristics of each line detection
 class Line():
     def __init__(self):
-        # was the line detected in the last iteration?
-        self.detected = False  
+        #was the line detected in the last iteration?
+        self.detected = False
+        #number of consecutive frames skipped
+        self.frames_skipped = 0
         #polynomial coefficients for the last n iterations
         self.previous_fits = []  
         #polynomial coefficients for the most recent fit
         self.current_fit = None  
+        #curvature for the last n iterations
+        self.previous_radius_of_curvatures = []
         #radius of curvature of the line in meters
         self.radius_of_curvature = None 
         #distance in meters of vehicle center from the line
         self.line_base_pos = None 
+        
+    def reject(self):
+        self.detected = False
+        self.frames_skipped = 0
+        self.previous_fits = []
+        self.previous_radius_of_curvatures = []
         
 def fit_point(y, line):
     # The lane fit is in meters, so we need to convert from pixel
@@ -452,8 +476,8 @@ def detect_lane(img, line, xmin, xmax):
     ally = []
     while ybottom > 0:
         # clip the sliding window start to the bounds of the image.
-        xleft = min(max(0, xleft), img.shape[1])
-        xright = min(xleft + SLIDING_WINDOW_WIDTH, img.shape[1])
+        xleft = min(max(xmin, xleft), xmax)
+        xright = min(xleft + SLIDING_WINDOW_WIDTH, xmax)
         ytop = max(0, ybottom - SLIDING_WINDOW_HEIGHT)
 
         # Loop through every pixel in the sliding window to see if
@@ -475,20 +499,29 @@ def detect_lane(img, line, xmin, xmax):
     # Check to see if we detected at least a reasonable number of candidate
     # points for the line. Otherwise just reuse the previously fit line and
     # trigger a full scan on the next frame.
-    if len(allx) < 10:
-        line.detected = False
-        line.previous_fits = []
+    if len(allx) < 100:
+        line.reject()
     else:
         # Calculate coefficients and radius of curve fit to detected points.
         allx = np.array(allx)
         ally = np.array(ally)
         coeffs = np.polyfit(ally*Y_METERS_PER_PIXEL, allx*X_METERS_PER_PIXEL, 2)
         
-        # Add the newly fit line to the previous lines and the compute the
-        # average to use as the smoothed line for this frame.
-        line.previous_fits.append(coeffs)
-        line.previous_fits = line.previous_fits[-N_FRAMES:]
-        coeffs = np.average(line.previous_fits, axis=0)
+        # Make sure the new curve doesn't fall too far away from the current average
+        # fit of the recent frames.
+        if len(line.previous_fits) > 0:
+            previous_fit_norm = line.current_fit / np.linalg.norm(line.current_fit)
+            coeffs_norm = coeffs / np.linalg.norm(coeffs)
+            fit_sim = np.dot(previous_fit_norm, coeffs_norm)
+            if fit_sim < FIT_TOLERANCE:
+                # Fit error exceeds tolerance, so skip update and continue to
+                # use the previous fit.
+                line.frames_skipped += 1
+                if line.frames_skipped > N_SKIPS:
+                    # We skipped too many frames, so reject the current line parameters
+                    # and start from scratch next time.
+                    line.reject()
+                return
                 
         # Evaluate radius at bottom of image.
         y_eval = (img.shape[0] - 1) * Y_METERS_PER_PIXEL
@@ -497,9 +530,22 @@ def detect_lane(img, line, xmin, xmax):
         xline = coeffs[2] + coeffs[1]*y_eval + coeffs[0]*y_eval*y_eval
         xcenter = X_METERS_PER_PIXEL * img.shape[1] / 2.
         base_pos = abs(xline - xcenter)
+        
+        # Add the newly fit line to the previous lines and the compute the
+        # average to use as the smoothed line for this frame.
+        line.previous_fits.append(coeffs)
+        line.previous_fits = line.previous_fits[-N_FRAMES:]
+        coeffs = np.average(line.previous_fits, axis=0)
+        
+        # Add the newly fit radius of curvature to the previous values and
+        # compute the averaage to use as the smoothed radius.
+        line.previous_radius_of_curvatures.append(radius)
+        line.previous_radius_of_curvatures = line.previous_radius_of_curvatures[-N_FRAMES:]
+        radius = np.average(line.previous_radius_of_curvatures, axis=0)
                 
         # Save line parameters.
         line.detected = True
+        line.frames_skipped = 0
         line.current_fit = coeffs
         line.radius_of_curvature = radius
         line.line_base_pos = base_pos
@@ -548,13 +594,31 @@ ax2.set_title('Lane Mask', fontsize=30)
 
 
 
-    <matplotlib.text.Text at 0x123d3beb8>
+    <matplotlib.text.Text at 0x128bc2400>
 
 
 
 
-![png](output_27_1.png)
+![png](output_29_1.png)
 
+
+Although not entirely perfect, the generated lane masks are roughly parallel and curving in the right direction. Average the lane masks over several frames should help smooth out some of the inconsistencies.
+
+
+```python
+# Loop through the test images and generate the lane mask.
+for filename in os.listdir('test_images'):
+    img = cv2.imread('test_images/' + filename)
+    img = undistort(img)
+    img = combined_threshold(img)
+    img = warp(img)
+    
+    left_line = Line()
+    right_line = Line()
+    detect_lanes(img, left_line, right_line)
+    mask = draw_mask(img, left_line, right_line)
+    cv2.imwrite('output_images/mask-' + filename, mask)
+```
 
 ## Image Processing Pipeline
 
@@ -562,7 +626,17 @@ The image processing pipeline will form the basis of the lane lines detection. T
 
 
 ```python
-def pipeline(img, left_line, right_line):
+class FrameData:
+    def __init__(self):
+        self.frame_count = 0
+        self.left_curvature = 0
+        self.right_curvature = 0
+        self.offset = 0
+
+def pipeline(img, left_line, right_line, frame_data=None):
+    # Create FrameData object if none passed in.
+    if frame_data is None:
+        frame_data = FrameData()
     # Undistort the image to correct for camera distortions.
     img = undistort(img)
     # Apply a Gaussian blur to smooth out the image.
@@ -575,18 +649,22 @@ def pipeline(img, left_line, right_line):
     detect_lanes(warped, left_line, right_line)
     # Draw the lane mask.
     warped_mask = draw_mask(warped, left_line, right_line)
-    # Unwarp the lane maske
+    # Unwarp the lane mask and convert it to the expected RGB colorspace.
     mask = unwarp(warped_mask)
     mask = cv2.cvtColor(mask, cv2.COLOR_BGR2RGB)
     # Combine the original image with the lane mask.
     combined = cv2.addWeighted(mask, 0.4, img, 1., 0.)
+    # Periodically update the curvature and offset from center.
+    if frame_data.frame_count % 5 == 0:
+        frame_data.left_curvature = int(left_line.radius_of_curvature)
+        frame_data.right_curvature = int(right_line.radius_of_curvature)
+        frame_data.offset = int(100. * (left_line.line_base_pos - right_line.line_base_pos) / 2.)
+    # Advance frame count.
+    frame_data.frame_count += 1
     # Annotate lane curvature and distance from center.
-    # Take the average curvature of the left and right lines.
-    curvature = (left_line.radius_of_curvature + right_line.radius_of_curvature) / 2
-    combined = cv2.putText(combined, 'Curvature: %0.1fm' % curvature, (30, 30), cv2.FONT_HERSHEY_COMPLEX, 1., (255, 255, 255))
-    # Calculate the car's offset from the center of lane.
-    offset = int(100. * (left_line.line_base_pos - right_line.line_base_pos) / 2.)
-    combined = cv2.putText(combined, 'Distance from Center: %dcm' % offset, (30, 60), cv2.FONT_HERSHEY_COMPLEX, 1., (255, 255, 255))
+    combined = cv2.putText(combined, 'Left Curvature: %dm' % frame_data.left_curvature, (30, 30), cv2.FONT_HERSHEY_COMPLEX, 1., (255, 255, 255))
+    combined = cv2.putText(combined, 'Right Curvature: %dm' % frame_data.right_curvature, (30, 60), cv2.FONT_HERSHEY_COMPLEX, 1., (255, 255, 255))
+    combined = cv2.putText(combined, 'Distance from Center: %dcm' % frame_data.offset, (30, 90), cv2.FONT_HERSHEY_COMPLEX, 1., (255, 255, 255))
     # Return the processed image.
     return combined
 
@@ -605,24 +683,23 @@ ax2.set_title('Processed Image', fontsize=30)
 
 
 
-    <matplotlib.text.Text at 0x123cba9e8>
+    <matplotlib.text.Text at 0x119459e10>
 
 
 
 
-![png](output_29_1.png)
+![png](output_33_1.png)
 
 
 
 ```python
 # Loop through the test images and apply the pipeline.
 for filename in os.listdir('test_images'):
-    if filename.startswith('test'):
-        img = cv2.imread('test_images/' + filename)
-        left_line = Line()
-        right_line = Line()
-        img = pipeline(img, Line(), Line())
-        cv2.imwrite('output_images/pipeline-' + filename, img)
+    img = cv2.imread('test_images/' + filename)
+    left_line = Line()
+    right_line = Line()
+    img = pipeline(img, Line(), Line())
+    cv2.imwrite('output_images/pipeline-' + filename, img)
 ```
 
 ## Video Pipeline
@@ -634,7 +711,8 @@ Now all the steps are in place to detect lines in the videos. First we will gene
 def process_image():
     left_line = Line()
     right_line = Line()
-    return (lambda img: pipeline(img, left_line, right_line))
+    frame_data = FrameData()
+    return (lambda img: pipeline(img, left_line, right_line, frame_data=frame_data))
 
 for filename in ['project_video.mp4', 'challenge_video.mp4', 'harder_challenge_video.mp4']:
     clip = VideoFileClip(filename)
@@ -647,7 +725,7 @@ for filename in ['project_video.mp4', 'challenge_video.mp4', 'harder_challenge_v
     [MoviePy] Writing video processed-project_video.mp4
 
 
-    100%|█████████▉| 1260/1261 [10:28<00:00,  2.18it/s]
+    100%|█████████▉| 1260/1261 [06:25<00:00,  3.20it/s]
 
 
     [MoviePy] Done.
@@ -657,7 +735,7 @@ for filename in ['project_video.mp4', 'challenge_video.mp4', 'harder_challenge_v
     [MoviePy] Writing video processed-challenge_video.mp4
 
 
-    100%|██████████| 485/485 [03:55<00:00,  1.96it/s]
+    100%|██████████| 485/485 [02:13<00:00,  3.54it/s]
 
 
     [MoviePy] Done.
@@ -667,7 +745,7 @@ for filename in ['project_video.mp4', 'challenge_video.mp4', 'harder_challenge_v
     [MoviePy] Writing video processed-harder_challenge_video.mp4
 
 
-    100%|█████████▉| 1199/1200 [10:19<00:00,  1.87it/s]
+    100%|█████████▉| 1199/1200 [06:02<00:00,  3.33it/s]
 
 
     [MoviePy] Done.
@@ -689,13 +767,42 @@ Intermediate progress images were saved as the pipeline was being developed. The
 
 * ```corners-calibration-*.jpg```: The camera calibration images showing the detected corners. Not all of the images were able to have their corners dected.
 * ```undistorted-calibration-*.jpg```: The camera calibration images after the undistorting them to remove camera artifacts.
-* ```saturation-threshold-*.jpg```: The test images after the saturation threshold has been applied to the HLS representation of the images.
-* ```combined-sobel-*.jpg```: The test images after the sobel edge filters have been applied.
+* ```color-threshold-*.jpg```: The test images after the lightness and saturation thresholds have been applied to the HLS representation of the images.
+* ```sobel-*.jpg```: The test images after the sobel edge filters have been applied.
 * ```combined-threshold-*,jpg```: The test images after the saturation threshold and sobel filter thresholds have been applied.
 * ```warp-*.jpg```: The thresholded images after being warped into a birds-eye perspective.
 * ```histogram-*.jpg```: A histogram of x values in the lower half of the birds-eye images. These are used to bootstrap the detection of the start of the lane lines.
+* ```mask-*.jpg```: The mask that will be drawn over the line as it was drawn from the birds-eye perspective.
 * ```pipeline-*.jpg```: The final result after apply all of the image transformations to the test images.
+
+## Observations
 
 The project was considerably more difficult than the first lane detection project. However, the advanced computer vision techniques were able to provide much more information to the self-driving car. These techniques were able to detect curved lanes and and make some estimates on the amount of curvature and how far away the car had drifted from the center of the lane.
 
 Unfortunately, the success of these computer vision technique are highly dependent on selecting the best filters and transformation as well as accurately tuning the various parameters of those algorithms. It would be nice to avoid all of this work by training a deep learning network to find and tune the parameters itself.
+
+### Problems & Issues Faced
+
+The biggest challenge we faced was finding a good set of filters and threshold values that would isolate lane lines without introducing unnecessary noise. In particular, while several techniques were tried that were succeful identifying points near the car, many of them failed to detect points further toward the horizon. Without identifying points along the entire span of the lane it was difficult to find to calculate the true curvature of the lane.
+
+Another challenge while accurately calculating the curvature and position of the lane relative to the car. While finding a curves to fit the detected points was fairly straightforward, using them to calculate the offset of the car within the lane and the radius of curvature was more problematic. Part of this was because the source and destination points used to define the perspective transform were not well calibrated. Part of it was also because the conversion between pixels and distance were only roughly estimated.
+
+### What Could Be Improved
+
+The pipeline could use better thresholding techniques that can identify lane lines without also including unnecessary noise. One technique that could be explored further is finding multiple ways to detect the lane lines and then taking the intersection of their results. This was used effectively with the Sobel filters to find parts of the screen that had edges in both the horizontal and vertical directions. This removes things like shadows from the trees which have softer edges.
+
+The perspective transform that warps the street image into a birds-eye view can introduce a significant amount of distortion artifacts if the lane detection and thresholding steps include significant amount of noise especially in the top portions of the image. This makes it particularly difficult to distinguish pixels belong to the lane when applying the sliding windows. At best this merely increases the computational complexity of calculating the curve. Unfortunately, most of the time this can can skew the calculation of the curve to return incorrect results.
+
+The sliding window technique used to search for points belonging to the lane lines is fairly naive and susceptible to being skewed by random noise present in the image. More advanced techniques could be used, such as curve fitting algorithms that are less affected outliers in the samples.
+
+Averaging the result of multiple frames helps smooth some of the rough edges of the pipeline. Taken too far, however, this can reduce the responsiveness and accuracy of the lane detection. More work is needed to figure out the best way smooth results without introducing noticeable smoothing artifacts in the video.
+
+### Where the Pipeline Can Fail
+
+The pipeline deveoped for this project has been tuned to the particular features of the project video and might not generalize to other conditions. The results of the challenge videos clearly show some of the limitations of the pipeline. Some potential situations where the pipeline can fail are:
+
+* If the edge of the road is marked by multiple lines, the pipeline has no way of distinguishing which is the correct line demarcating the actual line. The histogram used will pick whichever one yields the strongest peak. And depending on how discriminating the sliding window algorithm is, points from both lines may be picked up as candidate lane points.
+* The lane fitting assumes that the lane can be described with a simple quadratic curve. However, roads with significant winding and weaving  will not be classified properly.
+* Weather conditions can make detection more difficult. For example, the steps used to remove the effects of shadows during the day could cause detection to fail entirely in the evening.
+* Lens flare caused by driving into direct sunlight or other camera artifacts can make it more difficult to discern the actual features of the road.
+* Road repairs, guard rails, medians, or other features with long, hard edges can be confused with lane lines.
